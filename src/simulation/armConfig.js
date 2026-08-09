@@ -25,5 +25,38 @@ export const ARM_CONFIG = {
     wrist: '#f39c12',
     gripper: '#e74c3c',
     joint: '#95a5a6',
-  }
+    jointLimitHit: '#e74c3c',
+  },
 };
+
+/** Clamp a logical joint angle (degrees) into that joint's configured limits. */
+export function clampToLimits(joint, angle) {
+  const limits = ARM_CONFIG.limits[joint];
+  if (!limits) return angle;
+  return Math.max(limits.min, Math.min(limits.max, angle));
+}
+
+/**
+ * A real hobby servo only physically rotates 0-180 degrees. That 0-180
+ * throw is mechanically geared/linked to produce each joint's actual
+ * range of motion (e.g. the shoulder swings -90..90, the base swings
+ * -180..180). This maps a servo.write() value (0-180) onto the joint's
+ * logical range, so a real Arduino sketch driving servos the normal way
+ * produces physically sensible arm motion instead of a raw 1:1 passthrough.
+ */
+export function servoToJointAngle(joint, servoAngle) {
+  const limits = ARM_CONFIG.limits[joint];
+  if (!limits) return servoAngle;
+  const clampedServo = Math.max(0, Math.min(180, servoAngle));
+  const t = clampedServo / 180;
+  return limits.min + t * (limits.max - limits.min);
+}
+
+/** Inverse of servoToJointAngle - useful for reporting/debugging. */
+export function jointAngleToServo(joint, jointAngle) {
+  const limits = ARM_CONFIG.limits[joint];
+  if (!limits) return jointAngle;
+  const clamped = clampToLimits(joint, jointAngle);
+  const t = (clamped - limits.min) / (limits.max - limits.min);
+  return t * 180;
+}
