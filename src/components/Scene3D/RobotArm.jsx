@@ -8,8 +8,8 @@ function RoundedBox({ width, height, depth, color, ...props }) {
   return (
     <mesh {...props}>
       <boxGeometry args={[width, height, depth]} />
-      <meshStandardMaterial 
-        color={color} 
+      <meshStandardMaterial
+        color={color}
         roughness={0.4}
         metalness={0.3}
         envMapIntensity={0.5}
@@ -18,8 +18,24 @@ function RoundedBox({ width, height, depth, color, ...props }) {
   );
 }
 
+function JointSphere({ radius, hit }) {
+  const { colors } = ARM_CONFIG;
+  return (
+    <mesh>
+      <sphereGeometry args={[radius, 16, 16]} />
+      <meshStandardMaterial
+        color={hit ? colors.jointLimitHit : colors.joint}
+        roughness={0.2}
+        metalness={0.8}
+        emissive={hit ? colors.jointLimitHit : '#000000'}
+        emissiveIntensity={hit ? 0.6 : 0}
+      />
+    </mesh>
+  );
+}
+
 function RobotArm() {
-  const { angles } = useStore();
+  const { angles, limitHit } = useStore();
   const { segments, colors } = ARM_CONFIG;
 
   // Convert degrees to radians
@@ -27,7 +43,7 @@ function RobotArm() {
 
   return (
     <group position={[0, 0, 0]}>
-      
+
       {/* Base Platform */}
       <mesh position={[0, 0, 0]} receiveShadow>
         <cylinderGeometry args={[0.8, 1.0, 0.3, 32]} />
@@ -36,17 +52,11 @@ function RobotArm() {
 
       {/* Base Rotation */}
       <group position={[0, 0.3, 0]} rotation={[0, toRad(angles.base), 0]}>
-        <mesh position={[0, 0, 0]}>
-          <sphereGeometry args={[0.25, 16, 16]} />
-          <meshStandardMaterial color={colors.joint} roughness={0.2} metalness={0.8} />
-        </mesh>
+        <JointSphere radius={0.25} hit={limitHit.base} />
 
         {/* Shoulder */}
         <group position={[0, 0.4, 0]} rotation={[toRad(angles.shoulder), 0, 0]}>
-          <mesh position={[0, 0, 0]}>
-            <sphereGeometry args={[0.2, 16, 16]} />
-            <meshStandardMaterial color={colors.joint} roughness={0.2} metalness={0.8} />
-          </mesh>
+          <JointSphere radius={0.2} hit={limitHit.shoulder} />
 
           {/* Upper Arm */}
           <RoundedBox
@@ -59,10 +69,7 @@ function RobotArm() {
 
           {/* Elbow */}
           <group position={[0, segments.upperArm.length, 0]} rotation={[toRad(angles.elbow), 0, 0]}>
-            <mesh position={[0, 0, 0]}>
-              <sphereGeometry args={[0.18, 16, 16]} />
-              <meshStandardMaterial color={colors.joint} roughness={0.2} metalness={0.8} />
-            </mesh>
+            <JointSphere radius={0.18} hit={limitHit.elbow} />
 
             {/* Forearm */}
             <RoundedBox
@@ -75,10 +82,7 @@ function RobotArm() {
 
             {/* Wrist */}
             <group position={[0, -segments.forearm.length, 0]} rotation={[toRad(angles.wrist), 0, 0]}>
-              <mesh position={[0, 0, 0]}>
-                <sphereGeometry args={[0.15, 16, 16]} />
-                <meshStandardMaterial color={colors.joint} roughness={0.2} metalness={0.8} />
-              </mesh>
+              <JointSphere radius={0.15} hit={limitHit.wrist} />
 
               <RoundedBox
                 position={[0, -0.2, 0]}
@@ -89,10 +93,10 @@ function RobotArm() {
               />
 
               {/* Gripper */}
-              <Gripper 
+              <Gripper
                 position={[0, -segments.wrist.length - 0.1, 0]}
                 angle={angles.gripper}
-                color={colors.gripper}
+                color={limitHit.gripper ? colors.jointLimitHit : colors.gripper}
               />
             </group>
           </group>
