@@ -2,16 +2,22 @@
 import { useStore } from '../../store/armStore';
 import { ARM_CONFIG } from '../../simulation/armConfig';
 
-function ArmControls() {
-  const { angles, setAngle } = useStore();
+const JOINT_LABELS = {
+  base: 'Base',
+  shoulder: 'Shoulder',
+  elbow: 'Elbow',
+  wrist: 'Wrist',
+  gripper: 'Gripper',
+};
 
-  const joints = [
-    { name: 'Base', key: 'base', min: -180, max: 180 },
-    { name: 'Shoulder', key: 'shoulder', min: -90, max: 90 },
-    { name: 'Elbow', key: 'elbow', min: -135, max: 135 },
-    { name: 'Wrist', key: 'wrist', min: -90, max: 90 },
-    { name: 'Gripper', key: 'gripper', min: 0, max: 90 },
-  ];
+function ArmControls() {
+  const { angles, setAngle, limitHit } = useStore();
+
+  const joints = Object.keys(JOINT_LABELS).map((key) => ({
+    name: JOINT_LABELS[key],
+    key,
+    ...ARM_CONFIG.limits[key],
+  }));
 
   return (
     <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur p-4 rounded-lg shadow-xl">
@@ -19,7 +25,13 @@ function ArmControls() {
       <div className="space-y-3">
         {joints.map(({ name, key, min, max }) => (
           <div key={key} className="flex items-center gap-3">
-            <label className="w-20 text-sm font-medium text-gray-700">{name}</label>
+            <label
+              className={`w-20 text-sm font-medium ${
+                limitHit[key] ? 'text-red-500' : 'text-gray-700'
+              }`}
+            >
+              {name}
+            </label>
             <input
               type="range"
               min={min}
@@ -61,12 +73,9 @@ function applyPreset(name) {
     Reach: { base: 0, shoulder: 60, elbow: -90, wrist: 30, gripper: 0 },
     Pick: { base: 0, shoulder: 45, elbow: -60, wrist: 0, gripper: 0 },
   };
-  
+
   const store = useStore.getState();
-  const angles = presets[name];
-  Object.entries(angles).forEach(([key, value]) => {
-    store.setAngle(key, value);
-  });
+  store.setAngles(presets[name]);
 }
 
 export default ArmControls;
