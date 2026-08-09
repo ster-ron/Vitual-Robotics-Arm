@@ -1,5 +1,6 @@
 // src/simulation/virtualArduino.js
 import { useStore } from '../store/armStore';
+import { servoToJointAngle } from './armConfig';
 
 export class VirtualArduino {
   constructor(logCallback) {
@@ -27,6 +28,7 @@ export class VirtualArduino {
 
     // Store reference
     this.store = useStore.getState();
+    this.servoToJointAngle = servoToJointAngle;
 
     // Capture a stable reference to this board so the nested Servo class
     // (which has its own `this`) can reach back into it.
@@ -97,15 +99,33 @@ export class VirtualArduino {
           board.logCallback(`⚠️ Servo not attached`, 'warning');
           return;
         }
-        // Clamp angle
+        // A real servo only accepts 0-180; note if the sketch asked for
+        // something outside that before we clamp it.
+        const requested = angle;
         angle = Math.max(0, Math.min(180, angle));
+        if (requested !== angle) {
+          board.logCallback(
+            `⚠️ servo.write(${requested}) is outside a servo's 0-180° range - clamped to ${angle}°`,
+            'warning'
+          );
+        }
         this.angle = angle;
 
-        // Map to joint
+        // Map the servo's physical 0-180 throw onto the joint's real range
+        // of motion (e.g. shoulder -90..90), then let the store enforce
+        // that range as the final authority.
         const joint = board.servoMap[this.pin];
         if (joint && board.store) {
-          board.store.setAngle(joint, angle);
-          board.logCallback(`🔄 ${joint} moved to ${angle}°`, 'debug');
+          const logicalAngle = board.servoToJointAngle(joint, angle);
+          const { clamped, wasClamped } = board.store.setAngle(joint, logicalAngle);
+          if (wasClamped) {
+            board.logCallback(
+              `🛑 ${joint} limit reached - clamped to ${clamped}°`,
+              'warning'
+            );
+          } else {
+            board.logCallback(`🔄 ${joint} moved to ${clamped}°`, 'debug');
+          }
         }
 
         // Update pin value
