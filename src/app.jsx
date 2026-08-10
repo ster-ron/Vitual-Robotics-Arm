@@ -1,6 +1,6 @@
 // App.jsx
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, Grid } from '@react-three/drei';
+import { OrbitControls, Environment, Grid, SoftShadows } from '@react-three/drei';
 import { Suspense, useState, useRef } from 'react';
 import { Play, Square } from 'lucide-react';
 import RobotArm from './components/Scene3D/RobotArm';
@@ -60,14 +60,20 @@ function App() {
         <Canvas camera={{ position: [3, 3, 4], fov: 45 }} shadows>
           <Suspense fallback={null}>
             <Environment preset="warehouse" />
+            <SoftShadows size={20} samples={12} focus={0.6} />
 
             {/* Lighting */}
-            <ambientLight intensity={0.5} />
+            <ambientLight intensity={0.4} />
             <directionalLight
               position={[5, 10, 7]}
-              intensity={1}
+              intensity={1.1}
               castShadow
-              shadow-mapSize={1024}
+              shadow-mapSize={[2048, 2048]}
+              shadow-bias={-0.0005}
+              shadow-camera-left={-4}
+              shadow-camera-right={4}
+              shadow-camera-top={4}
+              shadow-camera-bottom={-4}
             />
             <pointLight position={[-5, 3, -5]} intensity={0.5} />
 
