@@ -1,58 +1,53 @@
 // src/store/armStore.js
 import { create } from 'zustand';
-import { ARM_CONFIG, clampToLimits } from '../simulation/armConfig';
+import { ARM_CONFIG } from '../simulation/armConfig';
 
-const DEFAULT_ANGLES = {
-  base: 0,
-  shoulder: 0,
-  elbow: 0,
-  wrist: 0,
-  gripper: 45,
-};
+function clamp(joint, value) {
+  const lim = ARM_CONFIG.limits[joint];
+  if (!lim) return Math.round(value);
+  return Math.round(Math.max(lim.min, Math.min(lim.max, value)));
+}
 
 export const useStore = create((set, get) => ({
-  angles: { ...DEFAULT_ANGLES },
+  angles: {
+    base: 0,
+    shoulder: 0,
+    elbow: 0,
+    wrist: 0,
+    gripper: 45,
+  },
 
-  // Tracks, per joint, whether the last requested angle had to be clamped
-  // to stay within ARM_CONFIG.limits. Components can use this to show a
-  // "hit the limit" visual cue.
-  limitHit: {},
+  // true while a joint is at (or within half a degree of) its limit —
+  // lets the UI show a "hit the stop" indicator instead of silently
+  // swallowing out-of-range commands.
+  atLimit: {},
 
   setAngle: (joint, value) => {
-    const limits = ARM_CONFIG.limits[joint];
-    const clamped = clampToLimits(joint, value);
-    const wasClamped = limits ? Math.round(value) !== Math.round(clamped) : false;
-
+    const clamped = clamp(joint, value);
+    const lim = ARM_CONFIG.limits[joint];
+    const hitLimit = !!lim && (clamped === lim.min || clamped === lim.max);
     set((state) => ({
-      angles: {
-        ...state.angles,
-        [joint]: Math.round(clamped),
-      },
-      limitHit: {
-        ...state.limitHit,
-        [joint]: wasClamped,
-      },
+      angles: { ...state.angles, [joint]: clamped },
+      atLimit: { ...state.atLimit, [joint]: hitLimit },
     }));
-
-    return { clamped: Math.round(clamped), wasClamped };
   },
 
   setAngles: (newAngles) => {
-    const current = get().angles;
-    const nextAngles = { ...current };
-    const nextLimitHit = { ...get().limitHit };
-
-    Object.entries(newAngles).forEach(([joint, value]) => {
-      const clamped = clampToLimits(joint, value);
-      const limits = ARM_CONFIG.limits[joint];
-      nextAngles[joint] = Math.round(clamped);
-      nextLimitHit[joint] = limits ? Math.round(value) !== Math.round(clamped) : false;
-    });
-
-    set({ angles: nextAngles, limitHit: nextLimitHit });
+    const clamped = {};
+    Object.entries(newAngles).forEach(([j, v]) => { clamped[j] = clamp(j, v); });
+    set({ angles: { ...get().angles, ...clamped } });
   },
 
   resetAngles: () => {
-    set({ angles: { ...DEFAULT_ANGLES }, limitHit: {} });
-  },
+    set({
+      angles: {
+        base: 0,
+        shoulder: 0,
+        elbow: 0,
+        wrist: 0,
+        gripper: 45,
+      },
+      atLimit: {},
+    });
+  }
 }));

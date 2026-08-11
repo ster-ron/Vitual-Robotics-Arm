@@ -1,9 +1,11 @@
 // src/simulation/virtualArduino.js
 import { useStore } from '../store/armStore';
-import { servoToJointAngle } from './armConfig';
+import { ARM_CONFIG } from './armConfig';
 
 export class VirtualArduino {
   constructor(logCallback) {
+    const board = this; // captured so inner classes/closures reach the *board*, not their own `this`
+
     this.pins = new Array(20).fill(null).map(() => ({
       mode: 'INPUT',
       value: 0,
@@ -14,8 +16,14 @@ export class VirtualArduino {
     this.intervalId = null;
     this.running = true;
 
-    // Serial buffer
-    this.serialBuffer = '';
+    // NOTE: outgoing (Serial.print/println/write) and incoming
+    // (Serial.available/read, fed by receive()) are two *separate*
+    // buffers. The original code used one buffer for both directions,
+    // which meant a sketch's own Serial.println() output would make
+    // Serial.available() true — i.e. firmware would appear to "hear"
+    // its own log lines. That breaks any real request/response protocol.
+    this.txBuffer = '';
+    this.rxBuffer = '';
 
     // Map servo pins to joints
     this.servoMap = {
@@ -28,153 +36,144 @@ export class VirtualArduino {
 
     // Store reference
     this.store = useStore.getState();
-    this.servoToJointAngle = servoToJointAngle;
 
-    // Capture a stable reference to this board so the nested Servo class
-    // (which has its own `this`) can reach back into it.
-    const board = this;
-
-    // Initialize Serial
+    // Initialize Serial (no `process` — this runs in the browser)
     this.Serial = {
       begin: (baud) => {
-        board.logCallback(`📡 Serial initialized at ${baud} baud`, 'info');
-        board.serialBuffer = '';
+        board.logCallback(`Serial initialized at ${baud} baud`, 'info');
+        board.txBuffer = '';
+        board.rxBuffer = '';
       },
       print: (value) => {
         const str = String(value);
-        board.serialBuffer += str;
+        board.txBuffer += str;
         board.logCallback(str, 'serial');
       },
       println: (value) => {
-        const str = String(value) + '\n';
-        board.serialBuffer += str;
+        const str = String(value === undefined ? '' : value);
+        board.txBuffer += str + '\n';
         board.logCallback(str, 'serial');
       },
-      available: () => {
-        return board.serialBuffer.length > 0 ? 1 : 0;
-      },
+      available: () => (board.rxBuffer.length > 0 ? 1 : 0),
       read: () => {
-        if (board.serialBuffer.length === 0) return -1;
-        const char = board.serialBuffer.charCodeAt(0);
-        board.serialBuffer = board.serialBuffer.slice(1);
+        if (board.rxBuffer.length === 0) return -1;
+        const char = board.rxBuffer.charCodeAt(0);
+        board.rxBuffer = board.rxBuffer.slice(1);
         return char;
+      },
+      // Reads up to (and consuming) the given terminator, e.g. '\n'.
+      readStringUntil: (terminator) => {
+        const idx = board.rxBuffer.indexOf(terminator);
+        if (idx === -1) return '';
+        const s = board.rxBuffer.slice(0, idx);
+        board.rxBuffer = board.rxBuffer.slice(idx + terminator.length);
+        return s;
       },
       write: (data) => {
         const str = typeof data === 'number' ? String.fromCharCode(data) : String(data);
-        board.serialBuffer += str;
+        board.txBuffer += str;
         board.logCallback(str, 'serial');
         return str.length;
       },
-      flush: () => {
-        board.serialBuffer = '';
-      },
+      flush: () => { board.txBuffer = ''; },
     };
 
-    // Servo class — defined here (not as a class field) so it can close
-    // over `board` and reach the real pins/store/logger instead of trying
-    // (and failing) to find them on the Servo instance itself.
+    // Called by an external controller (e.g. the Python runtime) to
+    // simulate a byte string arriving on the serial line.
+    this.receive = (str) => { board.rxBuffer += String(str); };
+
+    // Servo class — defined as a closure over `board` so its methods always
+    // reach the board's pins/store/log, regardless of what `this` is inside
+    // an individual Servo instance.
     this.Servo = class {
       constructor() {
         this.pin = null;
         this.angle = 90;
         this.minPulse = 544;
         this.maxPulse = 2400;
-        this._attached = false;
+        this.isAttached = false;
       }
 
       attach(pin) {
         if (pin < 0 || pin >= board.pins.length) {
-          board.logCallback(`⚠️ Invalid servo pin ${pin}`, 'warning');
+          board.logCallback(`Invalid servo pin ${pin}`, 'warning');
           return;
         }
         this.pin = pin;
-        this._attached = true;
+        this.isAttached = true;
         board.pins[pin].mode = 'OUTPUT';
         board.servos[pin] = this;
-        board.logCallback(`🦾 Servo attached to pin ${pin}`, 'info');
+        board.logCallback(`Servo attached to pin ${pin}`, 'info');
       }
 
       write(angle) {
-        if (!this._attached) {
-          board.logCallback(`⚠️ Servo not attached`, 'warning');
+        if (!this.isAttached) {
+          board.logCallback('Servo not attached', 'warning');
           return;
         }
-        // A real servo only accepts 0-180; note if the sketch asked for
-        // something outside that before we clamp it.
-        const requested = angle;
-        angle = Math.max(0, Math.min(180, angle));
-        if (requested !== angle) {
-          board.logCallback(
-            `⚠️ servo.write(${requested}) is outside a servo's 0-180° range - clamped to ${angle}°`,
-            'warning'
-          );
-        }
+        angle = Math.max(0, Math.min(180, Math.round(Number(angle))));
         this.angle = angle;
 
-        // Map the servo's physical 0-180 throw onto the joint's real range
-        // of motion (e.g. shoulder -90..90), then let the store enforce
-        // that range as the final authority.
         const joint = board.servoMap[this.pin];
         if (joint && board.store) {
-          const logicalAngle = board.servoToJointAngle(joint, angle);
-          const { clamped, wasClamped } = board.store.setAngle(joint, logicalAngle);
-          if (wasClamped) {
-            board.logCallback(
-              `🛑 ${joint} limit reached - clamped to ${clamped}°`,
-              'warning'
-            );
-          } else {
-            board.logCallback(`🔄 ${joint} moved to ${clamped}°`, 'debug');
+          // Map the servo's 0-180 range onto this joint's configured limits
+          const lim = ARM_CONFIG.limits[joint] || { min: 0, max: 180 };
+          const mapped = lim.min + (angle / 180) * (lim.max - lim.min);
+          board.store.setAngle(joint, mapped);
+
+          if (joint === 'gripper') {
+            const closedFraction = 1 - angle / 180; // 0 = fully open, 1 = fully closed
+            if (closedFraction > 0.85 && !board._wasGripping) {
+              board._wasGripping = true;
+              board.logCallback('Gripper closed — object grasped (simulated contact)', 'success');
+            } else if (closedFraction < 0.5) {
+              board._wasGripping = false;
+            }
           }
         }
 
-        // Update pin value
         const pwmValue = Math.round((angle / 180) * 255);
         board.pins[this.pin].value = pwmValue;
       }
 
-      read() {
-        return this.angle;
-      }
+      read() { return this.angle; }
 
       writeMicroseconds(us) {
         const angle = ((us - this.minPulse) / (this.maxPulse - this.minPulse)) * 180;
         this.write(Math.round(angle));
       }
 
-      attached() {
-        return this._attached;
-      }
+      attached() { return this.isAttached; } // no longer shadowed by a same-named field
 
       detach() {
-        this._attached = false;
+        this.isAttached = false;
         delete board.servos[this.pin];
-        board.logCallback(`🔌 Servo detached from pin ${this.pin}`, 'info');
+        board.logCallback(`Servo detached from pin ${this.pin}`, 'info');
       }
     };
   }
 
   pinMode(pin, mode) {
     if (pin < 0 || pin >= this.pins.length) {
-      this.logCallback(`⚠️ Invalid pin ${pin}`, 'warning');
+      this.logCallback(`Invalid pin ${pin}`, 'warning');
       return;
     }
     this.pins[pin].mode = mode;
-    this.logCallback(`📌 Pin ${pin} set to ${mode}`, 'info');
+    this.logCallback(`Pin ${pin} set to ${mode}`, 'info');
   }
 
   digitalWrite(pin, value) {
     if (pin < 0 || pin >= this.pins.length) {
-      this.logCallback(`⚠️ Invalid pin ${pin}`, 'warning');
+      this.logCallback(`Invalid pin ${pin}`, 'warning');
       return;
     }
     this.pins[pin].value = value ? 1 : 0;
-    this.logCallback(`⚡ Digital write pin ${pin} = ${value}`, 'debug');
+    this.logCallback(`Digital write pin ${pin} = ${value}`, 'debug');
   }
 
   digitalRead(pin) {
     if (pin < 0 || pin >= this.pins.length) {
-      this.logCallback(`⚠️ Invalid pin ${pin}`, 'warning');
+      this.logCallback(`Invalid pin ${pin}`, 'warning');
       return 0;
     }
     return this.pins[pin].value;
@@ -182,49 +181,30 @@ export class VirtualArduino {
 
   analogWrite(pin, value) {
     if (pin < 0 || pin >= this.pins.length) {
-      this.logCallback(`⚠️ Invalid pin ${pin}`, 'warning');
+      this.logCallback(`Invalid pin ${pin}`, 'warning');
       return;
     }
     value = Math.max(0, Math.min(255, value));
     this.pins[pin].value = value;
     this.pins[pin].pwm = true;
 
-    // If pin is connected to a servo, map to angle
     if (this.servos[pin]) {
       const angle = Math.round((value / 255) * 180);
       this.servos[pin].write(angle);
     }
-
-    this.logCallback(`📊 Analog write pin ${pin} = ${value}`, 'debug');
+    this.logCallback(`Analog write pin ${pin} = ${value}`, 'debug');
   }
 
   analogRead(pin) {
     if (pin < 0 || pin >= this.pins.length) {
-      this.logCallback(`⚠️ Invalid pin ${pin}`, 'warning');
+      this.logCallback(`Invalid pin ${pin}`, 'warning');
       return 0;
     }
-    // Simulate analog read with noise
     const base = this.pins[pin].value || 512;
     const noise = Math.floor(Math.random() * 10 - 5);
     return Math.max(0, Math.min(1023, base + noise));
   }
 
-  // Delay functions (async)
-  async delay(ms) {
-    if (!this.running) throw new Error('Execution stopped');
-    await new Promise((resolve, reject) => {
-      this.intervalId = setTimeout(() => {
-        if (this.running) resolve();
-        else reject(new Error('Execution stopped'));
-      }, ms);
-    });
-  }
-
-  async delayMicroseconds(us) {
-    return this.delay(us / 1000);
-  }
-
-  // Cleanup
   destroy() {
     this.running = false;
     if (this.intervalId) {

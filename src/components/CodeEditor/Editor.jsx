@@ -1,14 +1,19 @@
 // src/components/CodeEditor/Editor.jsx
 import Editor from '@monaco-editor/react';
 
-function CodeEditor({ code, onChange, isRunning }) {
+function CodeEditor({ code, onChange, isRunning, language = 'cpp', onRun }) {
   return (
     <Editor
       height="100%"
-      defaultLanguage="cpp"
+      language={language}
       theme="vs-dark"
       value={code}
       onChange={onChange}
+      onMount={(editor, monaco) => {
+        if (onRun) {
+          editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => onRun());
+        }
+      }}
       options={{
         minimap: { enabled: false },
         fontSize: 14,
@@ -21,7 +26,7 @@ function CodeEditor({ code, onChange, isRunning }) {
         },
         fontFamily: 'JetBrains Mono, monospace',
         fontWeight: '400',
-        tabSize: 2,
+        tabSize: language === 'python' ? 4 : 2,
         insertSpaces: true,
       }}
     />

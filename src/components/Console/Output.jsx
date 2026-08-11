@@ -1,7 +1,7 @@
 // src/components/Console/Output.jsx
 import { useEffect, useRef } from 'react';
 
-function ConsoleOutput({ messages }) {
+function ConsoleOutput({ messages, onClear }) {
   const containerRef = useRef();
 
   useEffect(() => {
@@ -32,23 +32,37 @@ function ConsoleOutput({ messages }) {
   };
 
   return (
-    <div 
-      ref={containerRef}
-      className="h-full overflow-auto p-3 font-mono text-sm"
-    >
-      {messages.length === 0 ? (
-        <div className="text-gray-500 italic flex items-center justify-center h-full">
-          Console output will appear here...
+    <div className="h-full flex flex-col">
+      <div className="flex items-center justify-between px-3 py-1 border-b border-gray-800 shrink-0">
+        <span className="text-[11px] uppercase tracking-wide text-gray-500 font-mono">Console</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-gray-600 font-mono">{messages.length}</span>
+          {onClear && (
+            <button
+              onClick={onClear}
+              className="text-[11px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-gray-800 transition"
+              title="Clear console"
+            >
+              Clear
+            </button>
+          )}
         </div>
-      ) : (
-        messages.map((msg, i) => (
-          <div key={i} className={`${getColor(msg.type)} whitespace-pre-wrap`}>
-            <span className="opacity-50 mr-2">[{new Date(msg.timestamp).toLocaleTimeString()}]</span>
-            <span className="mr-1">{getIcon(msg.type)}</span>
-            {msg.message}
+      </div>
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-auto p-3 font-mono text-sm">
+        {messages.length === 0 ? (
+          <div className="text-gray-500 italic flex items-center justify-center h-full">
+            Console output will appear here...
           </div>
-        ))
-      )}
+        ) : (
+          messages.map((msg) => (
+            <div key={msg.id ?? `${msg.timestamp}-${msg.message}`} className={`${getColor(msg.type)} whitespace-pre-wrap`}>
+              <span className="opacity-50 mr-2">[{new Date(msg.timestamp).toLocaleTimeString()}]</span>
+              <span className="mr-1">{getIcon(msg.type)}</span>
+              {msg.message}
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

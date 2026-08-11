@@ -2,20 +2,14 @@
 import { useStore } from '../../store/armStore';
 import { ARM_CONFIG } from '../../simulation/armConfig';
 
-const JOINT_LABELS = {
-  base: 'Base',
-  shoulder: 'Shoulder',
-  elbow: 'Elbow',
-  wrist: 'Wrist',
-  gripper: 'Gripper',
-};
+const JOINT_LABELS = { base: 'Base', shoulder: 'Shoulder', elbow: 'Elbow', wrist: 'Wrist', gripper: 'Gripper' };
 
 function ArmControls() {
-  const { angles, setAngle, limitHit } = useStore();
+  const { angles, atLimit, setAngle } = useStore();
 
   const joints = Object.keys(JOINT_LABELS).map((key) => ({
-    name: JOINT_LABELS[key],
     key,
+    name: JOINT_LABELS[key],
     ...ARM_CONFIG.limits[key],
   }));
 
@@ -26,11 +20,10 @@ function ArmControls() {
         {joints.map(({ name, key, min, max }) => (
           <div key={key} className="flex items-center gap-3">
             <label
-              className={`w-20 text-sm font-medium ${
-                limitHit[key] ? 'text-red-500' : 'text-gray-700'
-              }`}
+              className={`w-20 text-sm font-medium transition-colors ${atLimit?.[key] ? 'text-red-600' : 'text-gray-700'}`}
+              title={atLimit?.[key] ? `${name} at its limit (${min}° to ${max}°)` : undefined}
             >
-              {name}
+              {name}{atLimit?.[key] ? ' \u26a0' : ''}
             </label>
             <input
               type="range"
@@ -51,7 +44,7 @@ function ArmControls() {
       <div className="mt-3 pt-3 border-t border-gray-200">
         <p className="text-xs text-gray-500 mb-2">Presets</p>
         <div className="flex gap-2 flex-wrap">
-          {['Home', 'Wave', 'Reach', 'Pick'].map((preset) => (
+          {Object.keys(PRESETS).map((preset) => (
             <button
               key={preset}
               onClick={() => applyPreset(preset)}
@@ -66,16 +59,20 @@ function ArmControls() {
   );
 }
 
-function applyPreset(name) {
-  const presets = {
-    Home: { base: 0, shoulder: 0, elbow: 0, wrist: 0, gripper: 45 },
-    Wave: { base: 45, shoulder: 30, elbow: -45, wrist: 0, gripper: 0 },
-    Reach: { base: 0, shoulder: 60, elbow: -90, wrist: 30, gripper: 0 },
-    Pick: { base: 0, shoulder: 45, elbow: -60, wrist: 0, gripper: 0 },
-  };
+const PRESETS = {
+  Home: { base: 0, shoulder: 0, elbow: 0, wrist: 0, gripper: 45 },
+  Wave: { base: 45, shoulder: 30, elbow: -45, wrist: 0, gripper: 0 },
+  Reach: { base: 0, shoulder: 60, elbow: -90, wrist: 30, gripper: 0 },
+  Pick: { base: 0, shoulder: 45, elbow: -60, wrist: 0, gripper: 0 },
+  Inspect: { base: -30, shoulder: 15, elbow: -30, wrist: -45, gripper: 20 },
+};
 
+function applyPreset(name) {
   const store = useStore.getState();
-  store.setAngles(presets[name]);
+  const preset = PRESETS[name];
+  Object.entries(preset).forEach(([key, value]) => {
+    store.setAngle(key, value);
+  });
 }
 
 export default ArmControls;

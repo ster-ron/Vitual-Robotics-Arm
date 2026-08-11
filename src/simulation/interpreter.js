@@ -1,145 +1,113 @@
 // src/simulation/interpreter.js
+//
+// Runs an Arduino-style C++ sketch against a VirtualArduino board, using
+// the shared parser/evaluator in engine.js. See engine.js for why this is
+// a real parser instead of `new Function()` on raw C++.
+
 import { VirtualArduino } from './virtualArduino';
-import { useStore } from '../store/armStore';
+import { Scope, parseTokens, callFunction, runProgramBody, runGenerator } from './engine';
 
-let currentBoard = null;
-
-// Safety cap so a loop() with no delay() in it can't freeze the tab forever.
-// Sketches that call delay() (the normal case) will almost always hit the
-// 30s timeout or a Stop click long before this.
-const MAX_LOOP_ITERATIONS = 5000;
+let activeHandle = null;
+let activeBoard = null;
 
 export function stopExecution() {
-  if (currentBoard) {
-    currentBoard.running = false;
-  }
+  if (activeHandle) { activeHandle.stop(); activeHandle = null; }
+  activeBoard = null;
+}
+
+// Exposed so the Python runtime can push bytes onto this sketch's
+// incoming serial buffer (board.receive) — the two runtimes talk to each
+// other exactly the way a PC and a microcontroller would over a real
+// serial cable.
+export function getActiveBoard() {
+  return activeBoard;
+}
+
+function buildGlobalScope(board, ctx) {
+  const scope = new Scope(null);
+  scope.define('HIGH', 1);
+  scope.define('LOW', 0);
+  scope.define('INPUT', 'INPUT');
+  scope.define('OUTPUT', 'OUTPUT');
+  scope.define('INPUT_PULLUP', 'INPUT_PULLUP');
+  scope.define('PI', Math.PI);
+  scope.define('pinMode', board.pinMode.bind(board));
+  scope.define('digitalWrite', board.digitalWrite.bind(board));
+  scope.define('digitalRead', board.digitalRead.bind(board));
+  scope.define('analogWrite', board.analogWrite.bind(board));
+  scope.define('analogRead', board.analogRead.bind(board));
+  scope.define('map', (x, a, b, c, d) => ((x - a) * (d - c)) / (b - a) + c);
+  scope.define('constrain', (x, lo, hi) => Math.max(lo, Math.min(hi, x)));
+  scope.define('random', (a, b) => (b === undefined ? Math.floor(Math.random() * a) : a + Math.floor(Math.random() * (b - a))));
+  scope.define('millis', () => Math.floor(performance.now() - ctx.startTime));
+  scope.define('abs', Math.abs);
+  scope.define('min', Math.min);
+  scope.define('max', Math.max);
+  scope.define('parseInt', (v) => { const n = parseInt(v, 10); return Number.isNaN(n) ? 0 : n; });
+  scope.define('parseFloat', (v) => { const n = parseFloat(v); return Number.isNaN(n) ? 0 : n; });
+  scope.define('String', (v) => String(v));
+  scope.define('Number', (v) => Number(v));
+  scope.define('Serial', board.Serial);
+  scope.define('Servo', () => new board.Servo());
+
+  // delay() must pause the generator without blocking the browser thread —
+  // capped at 3s per call so a runaway sketch can't hang the simulator.
+  scope.define('delay', { __gen: function* (args) {
+    const ms = Math.min(3000, Math.max(0, Number(args[0]) || 0));
+    yield { type: 'wait', ms };
+  } });
+  scope.define('delayMicroseconds', { __gen: function* (args) {
+    const ms = Math.min(3000, Math.max(0, (Number(args[0]) || 0) / 1000));
+    yield { type: 'wait', ms };
+  } });
+
+  return scope;
 }
 
 /**
- * Converts a (simplified) Arduino/C++ sketch into something the JS
- * Function constructor can actually run:
- *  - strips comments and preprocessor lines (#include, #define, etc.)
- *  - turns `Servo name;` declarations into `let name = new Servo();`
- *  - turns `void name(...)` (setup, loop, and any helper function) into
- *    `async function name(...)` so delay() can be awaited anywhere
- *  - strips C-style types from parameter lists and local variable
- *    declarations (int/float/long/etc. -> let)
+ * Parses and runs an Arduino-style sketch.
+ * @param {string} code
+ * @param {(message: string, type?: string) => void} logCallback
+ * @param {(err: Error|null) => void} [onFinish] called when the program stops (error, or loop ended)
  */
-function prepareArduinoCode(code) {
-  let cleaned = code;
-
-  // Strip line and block comments
-  cleaned = cleaned.replace(/\/\/.*$/gm, '');
-  cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
-
-  // Strip preprocessor directives (#include <Servo.h>, #define FOO 1, ...)
-  cleaned = cleaned.replace(/^\s*#.*$/gm, '');
-
-  // Servo variable declarations: "Servo base;" -> "let base = new Servo();"
-  cleaned = cleaned.replace(/\bServo\s+(\w+)\s*;/g, 'let $1 = new Servo();');
-
-  // Function declarations: "void name(...)" -> "async function name(...)"
-  // Covers setup(), loop(), and any user-defined helper functions.
-  cleaned = cleaned.replace(/\bvoid\s+(\w+)\s*\(([^)]*)\)/g, 'async function $1($2)');
-
-  // Strip C-style types that are now sitting inside parameter lists,
-  // e.g. "async function moveTo(int b, int s)" -> "async function moveTo(b, s)"
-  cleaned = cleaned.replace(
-    /\b(int|float|double|long|unsigned long|unsigned int|char|bool|byte)\s+(\w+)/g,
-    '$2'
-  );
-
-  // Local variable declarations with an initializer:
-  // "int angle = 0;" / "for (int angle = 0; ...)" -> "let angle = 0;"
-  cleaned = cleaned.replace(
-    /\b(int|float|double|long|unsigned long|unsigned int|char|bool|byte)\s+(\w+)\s*=/g,
-    'let $2 ='
-  );
-
-  // Local variable declarations without an initializer: "int angle;" -> "let angle;"
-  cleaned = cleaned.replace(
-    /\b(int|float|double|long|unsigned long|unsigned int|char|bool|byte)\s+(\w+)\s*;/g,
-    'let $2;'
-  );
-
-  return cleaned;
-}
-
-export async function runArduinoCode(code, logCallback) {
+export function runArduinoCode(code, logCallback, onFinish) {
+  stopExecution();
   const board = new VirtualArduino(logCallback);
-  currentBoard = board;
-  const store = useStore.getState();
+  activeBoard = board;
+  const ctx = { stepBudget: { n: 0 }, startTime: performance.now() };
 
-  const context = {
-    board,
-    Serial: board.Serial,
-    Servo: board.Servo,
-    delay: board.delay.bind(board),
-    delayMicroseconds: board.delayMicroseconds.bind(board),
-    pinMode: board.pinMode.bind(board),
-    digitalWrite: board.digitalWrite.bind(board),
-    digitalRead: board.digitalRead.bind(board),
-    analogWrite: board.analogWrite.bind(board),
-    analogRead: board.analogRead.bind(board),
-
-    // Constants
-    INPUT: 'INPUT',
-    OUTPUT: 'OUTPUT',
-    INPUT_PULLUP: 'INPUT_PULLUP',
-    HIGH: 1,
-    LOW: 0,
-    PI: Math.PI,
-
-    // Store access for arm control
-    __store: store,
-    __setAngle: (joint, angle) => store.setAngle(joint, angle),
-  };
-
-  const preparedCode = prepareArduinoCode(code);
-
+  let ast;
   try {
-    const asyncWrapper = new Function(
-      ...Object.keys(context),
-      `
-        return (async function() {
-          ${preparedCode}
+    ast = parseTokens(code);
+  } catch (e) {
+    logCallback(`Compile error: ${e.message}`, 'error');
+    if (onFinish) onFinish(e);
+    return;
+  }
 
-          if (typeof setup === 'function') {
-            await setup();
-          }
-          if (typeof loop === 'function') {
-            let __iterations = 0;
-            while (board.running && __iterations < ${MAX_LOOP_ITERATIONS}) {
-              await loop();
-              __iterations++;
-            }
-          }
-          return { success: true };
-        })();
-      `
-    );
+  const scope = buildGlobalScope(board, ctx);
 
-    const result = await Promise.race([
-      asyncWrapper(...Object.values(context)),
-      new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Execution timeout (30s)')), 30000);
-      }),
-    ]);
-
-    return result;
-  } catch (error) {
-    // A Stop click makes delay() throw "Execution stopped" - that's an
-    // expected, user-initiated exit, not a real error.
-    if (error.message === 'Execution stopped') {
-      logCallback('⏹️ Execution stopped', 'info');
-      return { success: true, stopped: true };
-    }
-    logCallback(`❌ ${error.message}`, 'error');
-    throw error;
-  } finally {
-    board.destroy();
-    if (currentBoard === board) {
-      currentBoard = null;
+  function* main() {
+    yield* runProgramBody(ast, scope, ctx);
+    if (scope.has('setup')) yield* callFunction(scope.get('setup'), [], ctx);
+    if (scope.has('loop')) {
+      const loopFn = scope.get('loop');
+      while (true) {
+        yield { type: 'tick' };
+        yield* callFunction(loopFn, [], ctx);
+      }
     }
   }
+
+  logCallback('Program started', 'success');
+  activeHandle = runGenerator(main(), {
+    onDone: (err) => {
+      activeHandle = null;
+      board.destroy();
+      if (activeBoard === board) activeBoard = null;
+      if (err) logCallback(`Runtime error: ${err.message}`, 'error');
+      else logCallback('Program finished', 'success');
+      if (onFinish) onFinish(err || null);
+    },
+  });
 }

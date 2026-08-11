@@ -160,5 +160,55 @@ void loop() {
   Serial.println("👋 Wave complete!");
   delay(1000);
 }
-`
+`,
+
+  serial_bridge: `
+// Firmware side of the Python <-> C++ link.
+// Run this first, then switch to the Python tab and run the matching
+// "serial_bridge" controller script — it sends commands like
+// "SHOULDER:120" over the virtual serial line, which this sketch reads
+// and turns into servo moves, the same way a PC talks to a real board.
+
+#include <Servo.h>
+
+Servo base;
+Servo shoulder;
+Servo elbow;
+Servo wrist;
+Servo gripper;
+
+void setup() {
+  Serial.begin(9600);
+  base.attach(9);
+  shoulder.attach(10);
+  elbow.attach(11);
+  wrist.attach(12);
+  gripper.attach(13);
+  Serial.println("Firmware ready. Waiting for commands from Python...");
+}
+
+void loop() {
+  if (Serial.available()) {
+    String line = Serial.readStringUntil('\\n');
+    handleCommand(line);
+  }
+  delay(20);
+}
+
+void handleCommand(String line) {
+  int sep = line.indexOf(':');
+  if (sep == -1) return;
+  String joint = line.substring(0, sep);
+  int angle = parseInt(line.substring(sep + 1));
+
+  Serial.println("RX " + joint + " -> " + angle);
+
+  if (joint == "BASE") base.write(angle);
+  else if (joint == "SHOULDER") shoulder.write(angle);
+  else if (joint == "ELBOW") elbow.write(angle);
+  else if (joint == "WRIST") wrist.write(angle);
+  else if (joint == "GRIPPER") gripper.write(angle);
+  else Serial.println("Unknown joint: " + joint);
+}
+`,
 };
