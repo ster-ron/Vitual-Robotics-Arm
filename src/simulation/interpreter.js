@@ -23,6 +23,18 @@ export function getActiveBoard() {
   return activeBoard;
 }
 
+// Parses without running — lets the editor show syntax errors as the
+// user types, before they even hit Run.
+export function checkSyntax(code) {
+  try {
+    parseTokens(code);
+    return { ok: true };
+  } catch (e) {
+    const m = /^Line (\d+): (.*)$/.exec(e.message);
+    return { ok: false, line: m ? parseInt(m[1], 10) : 1, message: m ? m[2] : e.message };
+  }
+}
+
 function buildGlobalScope(board, ctx) {
   const scope = new Scope(null);
   scope.define('HIGH', 1);
@@ -69,12 +81,13 @@ function buildGlobalScope(board, ctx) {
  * @param {string} code
  * @param {(message: string, type?: string) => void} logCallback
  * @param {(err: Error|null) => void} [onFinish] called when the program stops (error, or loop ended)
+ * @param {(line: number) => void} [onLine] called with the source line about to execute
  */
-export function runArduinoCode(code, logCallback, onFinish) {
+export function runArduinoCode(code, logCallback, onFinish, onLine) {
   stopExecution();
   const board = new VirtualArduino(logCallback);
   activeBoard = board;
-  const ctx = { stepBudget: { n: 0 }, startTime: performance.now() };
+  const ctx = { stepBudget: { n: 0 }, startTime: performance.now(), onLine };
 
   let ast;
   try {

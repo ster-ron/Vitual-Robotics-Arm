@@ -111,18 +111,26 @@ export class VirtualArduino {
           board.logCallback('Servo not attached', 'warning');
           return;
         }
-        angle = Math.max(0, Math.min(180, Math.round(Number(angle))));
+        const joint = board.servoMap[this.pin];
+        const lim = (joint && ARM_CONFIG.limits[joint]) || { min: 0, max: 180 };
+
+        // Clamp straight to the joint's own configured range, same as the
+        // sliders and Python's arm.move() already do. (An earlier version
+        // remapped a fixed 0-180 input domain onto the joint's limits,
+        // Arduino-style — but every other control path here already uses
+        // direct joint degrees, including negative values for joints like
+        // the elbow, so that remap actually sent base.write(0) to the
+        // joint's extreme instead of its center. This keeps all control
+        // paths — C++, Python, and the manual sliders — meaning the same
+        // thing by the same number.)
+        angle = Math.max(lim.min, Math.min(lim.max, Math.round(Number(angle))));
         this.angle = angle;
 
-        const joint = board.servoMap[this.pin];
         if (joint && board.store) {
-          // Map the servo's 0-180 range onto this joint's configured limits
-          const lim = ARM_CONFIG.limits[joint] || { min: 0, max: 180 };
-          const mapped = lim.min + (angle / 180) * (lim.max - lim.min);
-          board.store.setAngle(joint, mapped);
+          board.store.setAngle(joint, angle);
 
           if (joint === 'gripper') {
-            const closedFraction = 1 - angle / 180; // 0 = fully open, 1 = fully closed
+            const closedFraction = 1 - (angle - lim.min) / (lim.max - lim.min); // 0 = fully open, 1 = fully closed
             if (closedFraction > 0.85 && !board._wasGripping) {
               board._wasGripping = true;
               board.logCallback('Gripper closed — object grasped (simulated contact)', 'success');
@@ -132,7 +140,7 @@ export class VirtualArduino {
           }
         }
 
-        const pwmValue = Math.round((angle / 180) * 255);
+        const pwmValue = Math.round(((angle - lim.min) / (lim.max - lim.min)) * 255);
         board.pins[this.pin].value = pwmValue;
       }
 

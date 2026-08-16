@@ -21,16 +21,21 @@ import { Scope, parseTokens, tokenize, Parser, callFunction, runProgramBody, run
 import { getActiveBoard } from './interpreter';
 
 /* ---------------- Python -> brace/semicolon preprocessor ---------------- */
+// Returns { code, lineMap } where lineMap[generatedLine] = originalLine.
+// The brace-insertion process adds/removes lines relative to the source,
+// so generated line numbers (which is what the tokenizer/parser see)
+// don't line up with what the user actually wrote — lineMap undoes that
+// for error reporting and the execution-pointer highlight.
 function pythonToPseudoC(src) {
   const rawLines = src.replace(/\t/g, '    ').split('\n');
   const lines = [];
-  for (let raw of rawLines) {
+  rawLines.forEach((raw, idx) => {
     let line = raw.replace(/#.*/, '');
-    if (line.trim() === '') continue;
-    if (/^\s*(import|from)\s/.test(line)) continue;
+    if (line.trim() === '') return;
+    if (/^\s*(import|from)\s/.test(line)) return;
     const indent = line.match(/^ */)[0].length;
-    lines.push({ indent, content: line.trim() });
-  }
+    lines.push({ indent, content: line.trim(), origLine: idx + 1 });
+  });
   const splitStrings = (s) => s.split(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g);
   const translate = (s, opensBlock) => {
     s = s.replace(/^def\s+/, 'function ');
@@ -51,23 +56,65 @@ function pythonToPseudoC(src) {
     return parts.join('');
   };
   const out = [];
+  const lineMap = [undefined]; // index 0 unused, lines are 1-indexed
   const stack = [0];
-  for (const { indent, content } of lines) {
-    while (indent < stack[stack.length - 1]) { stack.pop(); out.push('}'); }
-    if (indent > stack[stack.length - 1]) { stack.push(indent); out.push('{'); }
+  for (const { indent, content, origLine } of lines) {
+    while (indent < stack[stack.length - 1]) { stack.pop(); out.push('}'); lineMap.push(origLine); }
+    if (indent > stack[stack.length - 1]) { stack.push(indent); out.push('{'); lineMap.push(origLine); }
     const opensBlock = /:\s*$/.test(content);
     let body = opensBlock ? content.replace(/:\s*$/, '') : content;
     body = translate(body, opensBlock);
     if (opensBlock) out.push(body);
     else out.push(/[;{}]\s*$/.test(body) ? body : body + ';');
+    lineMap.push(origLine);
   }
-  while (stack.length > 1) { stack.pop(); out.push('}'); }
-  return out.join('\n');
+  while (stack.length > 1) { stack.pop(); out.push('}'); lineMap.push(lines.length ? lines[lines.length - 1].origLine : 1); }
+  return { code: out.join('\n'), lineMap };
+}
+
+function remapAstLines(node, lineMap, seen = new Set()) {
+  if (!node || typeof node !== 'object' || seen.has(node)) return;
+  seen.add(node);
+  if (typeof node.line === 'number') node.line = lineMap[node.line] || node.line;
+  for (const key of Object.keys(node)) {
+    const val = node[key];
+    if (Array.isArray(val)) val.forEach((v) => remapAstLines(v, lineMap, seen));
+    else if (val && typeof val === 'object') remapAstLines(val, lineMap, seen);
+  }
 }
 
 function parsePython(src) {
-  const pre = pythonToPseudoC(src);
-  return new Parser(tokenize(pre)).parseProgram();
+  const { code, lineMap } = pythonToPseudoC(src);
+  let ast;
+  try {
+    ast = new Parser(tokenize(code)).parseProgram();
+  } catch (e) {
+    const m = /^Line (\d+): (.*)$/.exec(e.message);
+    if (m) {
+      const genLine = parseInt(m[1], 10);
+      const origLine = lineMap[genLine] || genLine;
+      const err = new Error(`Line ${origLine}: ${m[2]}`);
+      err.__lined = true;
+      throw err;
+    }
+    throw e;
+  }
+  remapAstLines(ast, lineMap);
+  return ast;
+}
+
+// Parses without running, for live-as-you-type error checking.
+export function checkPythonSyntax(code) {
+  try {
+    parsePython(code);
+    return { ok: true };
+  } catch (e) {
+    const m = /^Line (\d+): (.*)$/.exec(e.message);
+    // Generated-line errors (e.g. from the tokenizer itself, before any
+    // remap has happened) fall back to line 1 rather than showing a
+    // confusing generated-code line number to the user.
+    return { ok: false, line: m ? parseInt(m[1], 10) : 1, message: m ? m[2] : e.message };
+  }
 }
 
 /* ---------------- Builtins for the Python side ---------------- */
@@ -145,10 +192,11 @@ export function stopPythonExecution() {
  * @param {string} code
  * @param {(message: string, type?: string) => void} logCallback
  * @param {(err: Error|null) => void} [onFinish]
+ * @param {(line: number) => void} [onLine] called with the source line about to execute
  */
-export function runPythonCode(code, logCallback, onFinish) {
+export function runPythonCode(code, logCallback, onFinish, onLine) {
   stopPythonExecution();
-  const ctx = { stepBudget: { n: 0 }, startTime: performance.now(), log: logCallback };
+  const ctx = { stepBudget: { n: 0 }, startTime: performance.now(), log: logCallback, onLine };
 
   let ast;
   try {
