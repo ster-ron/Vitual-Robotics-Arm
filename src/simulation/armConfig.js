@@ -17,19 +17,14 @@ export const ARM_CONFIG = {
     gripper: { min: 0, max: 90 },
   },
 
-  colors: {
-    base: '#20262b',
-    shoulder: '#3a4046',
-    upperArm: '#d6dade',
-    forearm: '#bfc4c9',
-    wrist: '#9aa0a6',
-    gripper: '#c0392b',
-    gripperTip: '#8f291c',
-    joint: '#3a4046',
-    jointLimitHit: '#ff4d4d',
-    motorHousing: '#15181b',
-    bolt: '#0d0f11',
-    accent: '#e8791b',
+    colors: {
+    base: '#dfe2e6',
+    upperArm: '#e4e6ea',
+    forearm: '#e9ebee',
+    wrist: '#eef0f2',
+    gripper: '#7ed321',
+    accent: '#7ed321',
+    joint: '#1c2b4a',
   },
 };
 

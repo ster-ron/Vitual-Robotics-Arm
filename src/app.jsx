@@ -145,7 +145,7 @@ function App() {
             {/* Three-point lighting: warm key light casting the shadows,
                 cool dim fill to soften them, and a rim light behind the
                 arm to separate its silhouette from the background. */}
-            <ambientLight intensity={0.25} />
+            <ambientLight intensity={0.55} />
             <directionalLight
               position={[4, 7, 5]}
               intensity={1.4}
@@ -175,7 +175,7 @@ function App() {
                 roughness={1}
                 depthScale={1}
                 minDepthThreshold={0.85}
-                color="#0a0c0f"
+                color="#4a4f57"
                 metalness={0.4}
               />
             </mesh>
